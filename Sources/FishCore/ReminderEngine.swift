@@ -37,6 +37,20 @@ public enum ReminderEngine {
                     result.append(DueReminder(key: key, title: "上班提醒", body: "该上班了，记得打卡上班。"))
                 }
             }
+            if schedule.lunchEnabled {
+                if schedule.remindLunchStart, within(schedule.lunchStartMinutes) {
+                    let key = "lunch-start-\(dayKey)"
+                    if !fired.contains(key) {
+                        result.append(DueReminder(key: key, title: "午休提醒", body: "午休时间到了，吃个饭，好好休息一下。"))
+                    }
+                }
+                if schedule.remindLunchEnd, within(schedule.lunchEndMinutes) {
+                    let key = "lunch-end-\(dayKey)"
+                    if !fired.contains(key) {
+                        result.append(DueReminder(key: key, title: "午休结束提醒", body: "午休结束了，准备开始下午的工作吧。"))
+                    }
+                }
+            }
             if schedule.remindEnd, within(schedule.endMinutes) {
                 let key = "work-end-\(dayKey)"
                 if !fired.contains(key) {

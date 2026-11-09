@@ -35,19 +35,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 }
 
-private struct MenuBarLabel: View {
-    @ObservedObject var model: AppModel
+private struct OvertimeReminderDialog: View {
+    let message: String
+    let onDismiss: () -> Void
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("该下班了", systemImage: "clock")
+                .font(.headline)
+            Text(message)
+                .font(.body)
+            HStack {
+                Spacer()
+                Button("知道了", action: onDismiss)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+    }
+}
+
+private struct MenuBarLabel: View {
+    @ObservedObject var model: AppModel
+    @State private var displayedAt = Date()
+    @State private var flashOn = true
+
+    var body: some View {
+        let debtMode = model.config.debtModeEnabled
+        let overtime = debtMode && model.isOvertime(at: displayedAt)
+        let text = debtMode ? model.menuBarText(at: displayedAt) : model.menuBarText
+
         HStack(spacing: 4) {
             Image(systemName: "fish")
                 .font(.system(size: 11.5, weight: .medium))
                 .symbolRenderingMode(.hierarchical)
-            Text(model.menuBarText)
+            Text(text)
                 .font(.system(size: 12.5, weight: .medium).monospacedDigit())
+                .foregroundStyle(overtime ? Color.red : Color.primary)
+                .opacity(overtime && !flashOn ? 0.3 : 1)
+                .animation(.easeInOut(duration: 0.45), value: flashOn)
         }
-        .help("MFish · 摸鱼日历")
-        .accessibilityLabel("MFish，\(model.menuBarText)")
+        .task(id: debtMode) {
+            guard debtMode else { return }
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 1_000_000_000) }
+                catch { return }
+                displayedAt = Date()
+                if model.isOvertime(at: displayedAt) { flashOn.toggle() }
+                else { flashOn = true }
+            }
+        }
+        .help(debtMode ? "MFish · 讨债模式 · 上班打卡后开始下班倒计时" : "MFish · 摸鱼日历")
+        .accessibilityLabel("MFish，\(text)")
     }
 }
 
@@ -60,8 +100,10 @@ struct FishFailure: LocalizedError {
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var now = Date()
+    private var timerNow = Date()
     @Published private(set) var calendar = HolidayCalendar(years: [])
     @Published private(set) var sourceCalendar = HolidayCalendar(years: [])
+    @Published private(set) var holidayListCalendar = HolidayCalendar(years: [])
     @Published private(set) var cacheDates: [Int: Date] = [:]
     @Published private(set) var refreshing = false
     @Published private(set) var dataError: String?
@@ -83,6 +125,10 @@ final class AppModel: ObservableObject {
     private var lastRefreshAttempt: Date?
     private var lastRefreshSucceeded = false
     private var changingNotifications = false
+    private var debtReminderDayKey: String?
+    private var debtReminderInterval: Int?
+    private var nextDebtReminderAt: Date?
+    private var debtReminderPanel: NSPanel?
 
     init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -106,11 +152,14 @@ final class AppModel: ObservableObject {
             self?.fireDueReminders()
             await self?.refreshIfNeeded()
             await self?.refreshSystemStatus()
+            self?.fireDebtReminderIfNeeded()
             while !Task.isCancelled {
                 do { try await Task.sleep(nanoseconds: 30_000_000_000) }
                 catch { break }
                 guard let self = self else { break }
-                self.now = Date()
+                self.timerNow = Date()
+                self.now = self.timerNow
+                self.fireDebtReminderIfNeeded()
                 self.fireDueReminders()
                 await self.refreshIfNeeded()
             }
@@ -125,15 +174,32 @@ final class AppModel: ObservableObject {
     var todayName: String? { calendar.holidayName(on: now) }
     var todayClock: ClockDay { records.clockIns[todayKey] ?? ClockDay() }
 
+    func isOvertime(at date: Date) -> Bool {
+        let key = HolidayCalendar.dayKey(for: date)
+        guard config.debtModeEnabled, let clock = records.clockIns[key],
+              clock.start != nil, clock.end == nil,
+              let end = workCalendar.scheduledEnd(on: date) else { return false }
+        return date > end
+    }
+
     var restCountdown: (target: Date, name: String?, interval: TimeInterval)? {
         guard let next = workCalendar.nextRestDay(after: now) else { return nil }
         return (next.date, next.name, max(0, next.date.timeIntervalSince(now)))
     }
 
-    var menuBarText: String {
-        if todayIsRestDay { return "摸鱼中" }
-        guard let countdown = restCountdown else { return "—" }
-        return CountdownFormat.compact(countdown.interval)
+    var menuBarText: String { menuBarText(at: now) }
+
+    func menuBarText(at date: Date) -> String {
+        if config.debtModeEnabled {
+            let key = HolidayCalendar.dayKey(for: date)
+            guard let clock = records.clockIns[key], clock.start != nil else { return "待上班卡" }
+            guard clock.end == nil else { return "已下班" }
+            guard let end = workCalendar.scheduledEnd(on: date) else { return "—" }
+            return CountdownFormat.precise(end.timeIntervalSince(date))
+        }
+        if workCalendar.isRestDay(on: date) { return "摸鱼中" }
+        guard let next = workCalendar.nextRestDay(after: date) else { return "—" }
+        return CountdownFormat.compact(max(0, next.date.timeIntervalSince(date)))
     }
 
     var yearProgress: YearProgress { YearProgress(now: now) }
@@ -151,9 +217,12 @@ final class AppModel: ObservableObject {
     // MARK: - 打卡
 
     func clockIn() {
+        timerNow = Date()
+        now = timerNow
         var day = records.clockIns[todayKey] ?? ClockDay()
         if day.start == nil { day.start = now } else { day.end = now }
         records.clockIns[todayKey] = day
+        resetDebtReminderSchedule()
         persistRecords()
     }
 
@@ -165,11 +234,13 @@ final class AppModel: ObservableObject {
             throw FishFailure("请填写上班时间；下班时间需晚于上班时间。")
         }
         records.clockIns[key] = day
+        if key == todayKey { resetDebtReminderSchedule() }
         persistRecords()
     }
 
     func deleteClockDay(_ key: String) {
         records.clockIns.removeValue(forKey: key)
+        if key == todayKey { resetDebtReminderSchedule() }
         persistRecords()
     }
 
@@ -208,11 +279,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func saveDayOverride(_ dayOverride: DayOverride) throws {
+    func saveDayOverride(_ dayOverride: DayOverride, replacingID: UUID? = nil) throws {
         guard dayOverride.isValid() else {
-            throw FishFailure("调休标记需要合法日期和非空名称。")
+            throw FishFailure("请填写名称、有效日期及同日内的起止时间。")
         }
-        config.dayOverrides.removeAll { $0.date == dayOverride.date }
+        config.dayOverrides.removeAll { $0.date == dayOverride.date || $0.id == replacingID }
         config.dayOverrides.append(dayOverride)
         persistConfig()
         reloadCalendar()
@@ -231,6 +302,13 @@ final class AppModel: ObservableObject {
               schedule.startMinutes < schedule.endMinutes else {
             throw FishFailure("上班时间需早于下班时间。")
         }
+        if schedule.lunchEnabled {
+            guard schedule.startMinutes < schedule.lunchStartMinutes,
+                  schedule.lunchStartMinutes < schedule.lunchEndMinutes,
+                  schedule.lunchEndMinutes < schedule.endMinutes else {
+                throw FishFailure("午休开始时间需早于结束时间，且午休时段需在上下班时间之间。")
+            }
+        }
         let validDays: ([Int]) -> Bool = { !$0.isEmpty && $0.allSatisfy { (1...7).contains($0) } }
         guard validDays(schedule.restWeekdays), validDays(schedule.singleRestWeekdays) else {
             throw FishFailure("每周至少需要保留一个休息日。")
@@ -239,6 +317,7 @@ final class AppModel: ObservableObject {
         schedule.restWeekdays = Array(Set(schedule.restWeekdays)).sorted()
         schedule.singleRestWeekdays = Array(Set(schedule.singleRestWeekdays)).sorted()
         config.schedule = schedule
+        resetDebtReminderSchedule()
         persistConfig()
     }
 
@@ -327,6 +406,48 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func setDebtModeEnabled(_ enabled: Bool) {
+        config.debtModeEnabled = enabled
+        resetDebtReminderSchedule()
+        persistConfig()
+    }
+
+    func setDebtReminderEnabled(_ enabled: Bool) {
+        config.debtReminderEnabled = enabled
+        resetDebtReminderSchedule()
+        persistConfig()
+    }
+
+    func setDebtReminderIntervalMinutes(_ minutes: Int) {
+        config.debtReminderIntervalMinutes = min(120, max(1, minutes))
+        resetDebtReminderSchedule()
+        persistConfig()
+    }
+
+    func setStandardDailyHours(_ hours: Double) {
+        guard hours.isFinite else { return }
+        config.standardDailyHours = min(24, max(0.5, hours))
+        persistConfig()
+    }
+
+    func setStandardWeeklyHours(_ hours: Double) {
+        guard hours.isFinite else { return }
+        config.standardWeeklyHours = min(168, max(1, hours))
+        persistConfig()
+    }
+
+    func setWarningThresholdPercent(_ percent: Int) {
+        config.warningThresholdPercent = min(400, max(100, percent))
+        persistConfig()
+    }
+
+    func resetWorkHourWarningDefaults() {
+        config.standardDailyHours = 8
+        config.standardWeeklyHours = 40
+        config.warningThresholdPercent = 150
+        persistConfig()
+    }
+
     func saveTemplate(_ template: String) throws {
         let trimmed = template.trimmingCharacters(in: .whitespacesAndNewlines)
         _ = try HolidaySource.url(template: trimmed, year: Calendar.current.component(.year, from: Date()))
@@ -358,6 +479,56 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: - 私有
+
+    private func resetDebtReminderSchedule() {
+        debtReminderDayKey = nil
+        debtReminderInterval = nil
+        nextDebtReminderAt = nil
+        debtReminderPanel?.close()
+        debtReminderPanel = nil
+    }
+
+    private func fireDebtReminderIfNeeded() {
+        let interval = config.debtReminderIntervalMinutes
+        let currentTime = timerNow
+        let currentDayKey = HolidayCalendar.dayKey(for: currentTime)
+        guard config.debtModeEnabled, config.debtReminderEnabled, isOvertime(at: currentTime),
+              let end = workCalendar.scheduledEnd(on: currentTime) else {
+            resetDebtReminderSchedule()
+            return
+        }
+        if let panel = debtReminderPanel {
+            guard !panel.isVisible else { return }
+            debtReminderPanel = nil
+            timerNow = Date()
+            nextDebtReminderAt = timerNow.addingTimeInterval(TimeInterval(interval * 60))
+            return
+        }
+        if debtReminderDayKey != currentDayKey || debtReminderInterval != interval {
+            debtReminderDayKey = currentDayKey
+            debtReminderInterval = interval
+            nextDebtReminderAt = end.addingTimeInterval(TimeInterval(interval * 60))
+        }
+        guard let due = nextDebtReminderAt, currentTime >= due else { return }
+        showDebtReminder(message: "已经超时 \(CountdownFormat.precise(currentTime.timeIntervalSince(end)).dropFirst())，请打下班卡。")
+    }
+
+    private func showDebtReminder(message: String) {
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 150),
+                            styleMask: [.titled, .closable, .utilityWindow],
+                            backing: .buffered, defer: false)
+        panel.title = "下班提醒"
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.center()
+        panel.contentView = NSHostingView(rootView: OvertimeReminderDialog(message: message) { [weak panel] in
+            panel?.close()
+        })
+        debtReminderPanel = panel
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+    }
 
     private func fireDueReminders() {
         guard config.notificationsEnabled else { return }
@@ -403,6 +574,7 @@ final class AppModel: ObservableObject {
             }
         }
         sourceCalendar = HolidayCalendar(years: loaded)
+        holidayListCalendar = HolidayCalendar(years: loaded, overrides: config.overrides)
         calendar = HolidayCalendar(years: loaded, overrides: config.overrides, dayOverrides: config.dayOverrides)
         cacheDates = dates
     }

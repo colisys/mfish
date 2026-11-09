@@ -37,6 +37,37 @@ public struct WorkCalendar {
         return isRestDay(on: date) ? .rest : .work
     }
 
+    /// Net scheduled seconds, independent of clock records. Timed work replaces
+    /// the normal interval; timed rest subtracts only its net overlap with it.
+    public func scheduledWorkDuration(on date: Date) -> TimeInterval {
+        let override = holidays.timedOverride(on: date)
+        if let override, !override.isOffDay,
+           let start = override.startMinutes, let end = override.endMinutes {
+            return TimeInterval(netMinutes(from: start, to: end) * 60)
+        }
+        guard !isRestDay(on: date),
+              (0..<1440).contains(schedule.startMinutes),
+              (0..<1440).contains(schedule.endMinutes),
+              schedule.startMinutes < schedule.endMinutes else { return 0 }
+        var minutes = netMinutes(from: schedule.startMinutes, to: schedule.endMinutes)
+        if let override, override.isOffDay,
+           let start = override.startMinutes, let end = override.endMinutes {
+            minutes -= netMinutes(from: max(schedule.startMinutes, start),
+                                  to: min(schedule.endMinutes, end))
+        }
+        return TimeInterval(max(0, minutes) * 60)
+    }
+
+    private func netMinutes(from start: Int, to end: Int) -> Int {
+        guard start < end else { return 0 }
+        guard schedule.lunchEnabled,
+              (0..<1440).contains(schedule.lunchStartMinutes),
+              (0..<1440).contains(schedule.lunchEndMinutes),
+              schedule.lunchStartMinutes < schedule.lunchEndMinutes else { return end - start }
+        let lunch = max(0, min(end, schedule.lunchEndMinutes) - max(start, schedule.lunchStartMinutes))
+        return end - start - lunch
+    }
+
     /// Whether the week containing `date` uses the 单休 rest-day set.
     public func isSingleWeek(containing date: Date) -> Bool {
         switch schedule.weekMode {
@@ -59,6 +90,27 @@ public struct WorkCalendar {
         for offset in 1...400 {
             guard let day = calendar.date(byAdding: .day, value: offset, to: today) else { continue }
             if isRestDay(on: day) { return (day, holidays.holidayName(on: day)) }
+        }
+        return nil
+    }
+
+    /// The configured end time on a given date, whether it is a workday or not.
+    public func scheduledEnd(on date: Date) -> Date? {
+        guard (0..<1440).contains(schedule.endMinutes) else { return nil }
+        return calendar.date(bySettingHour: schedule.endMinutes / 60,
+                             minute: schedule.endMinutes % 60,
+                             second: 0, of: date)
+    }
+
+    /// Returns the next workday's configured end time, including today when it
+    /// is a workday and its end time has not passed yet.
+    public func nextWorkdayEnd(after date: Date) -> Date? {
+        let today = calendar.startOfDay(for: date)
+        for offset in 0...400 {
+            guard let day = calendar.date(byAdding: .day, value: offset, to: today),
+                  !isRestDay(on: day),
+                  let end = scheduledEnd(on: day), end > date else { continue }
+            return end
         }
         return nil
     }

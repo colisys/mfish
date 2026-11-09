@@ -21,11 +21,18 @@ public struct WorkSchedule: Codable, Equatable {
     public var anchorIsSingle: Bool
     public var remindStart: Bool
     public var remindEnd: Bool
+    public var lunchEnabled: Bool
+    public var lunchStartMinutes: Int
+    public var lunchEndMinutes: Int
+    public var remindLunchStart: Bool
+    public var remindLunchEnd: Bool
 
     public init(enabled: Bool = false, startMinutes: Int = 540, endMinutes: Int = 1080,
                 weekMode: WeekMode = .double, restWeekdays: [Int] = [1, 7],
                 singleRestWeekdays: [Int] = [1], anchorMonday: String = "2026-01-05",
-                anchorIsSingle: Bool = false, remindStart: Bool = true, remindEnd: Bool = true) {
+                anchorIsSingle: Bool = false, remindStart: Bool = true, remindEnd: Bool = true,
+                lunchEnabled: Bool = false, lunchStartMinutes: Int = 720, lunchEndMinutes: Int = 780,
+                remindLunchStart: Bool = true, remindLunchEnd: Bool = true) {
         self.enabled = enabled
         self.startMinutes = startMinutes
         self.endMinutes = endMinutes
@@ -36,11 +43,17 @@ public struct WorkSchedule: Codable, Equatable {
         self.anchorIsSingle = anchorIsSingle
         self.remindStart = remindStart
         self.remindEnd = remindEnd
+        self.lunchEnabled = lunchEnabled
+        self.lunchStartMinutes = lunchStartMinutes
+        self.lunchEndMinutes = lunchEndMinutes
+        self.remindLunchStart = remindLunchStart
+        self.remindLunchEnd = remindLunchEnd
     }
 
     enum CodingKeys: String, CodingKey {
         case enabled, startMinutes, endMinutes, weekMode, restWeekdays, singleRestWeekdays
         case anchorMonday, anchorIsSingle, remindStart, remindEnd
+        case lunchEnabled, lunchStartMinutes, lunchEndMinutes, remindLunchStart, remindLunchEnd
     }
 
     /// Tolerates schedules written by older versions: missing keys get defaults.
@@ -58,6 +71,11 @@ public struct WorkSchedule: Codable, Equatable {
         anchorIsSingle = try c.decodeIfPresent(Bool.self, forKey: .anchorIsSingle) ?? false
         remindStart = try c.decodeIfPresent(Bool.self, forKey: .remindStart) ?? true
         remindEnd = try c.decodeIfPresent(Bool.self, forKey: .remindEnd) ?? true
+        lunchEnabled = try c.decodeIfPresent(Bool.self, forKey: .lunchEnabled) ?? false
+        lunchStartMinutes = try c.decodeIfPresent(Int.self, forKey: .lunchStartMinutes) ?? 720
+        lunchEndMinutes = try c.decodeIfPresent(Int.self, forKey: .lunchEndMinutes) ?? 780
+        remindLunchStart = try c.decodeIfPresent(Bool.self, forKey: .remindLunchStart) ?? true
+        remindLunchEnd = try c.decodeIfPresent(Bool.self, forKey: .remindLunchEnd) ?? true
     }
 
     private static func sanitizeWeekdays(_ days: [Int]?, fallback: [Int]) -> [Int] {

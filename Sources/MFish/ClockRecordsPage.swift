@@ -20,8 +20,7 @@ struct ClockRecordsPage: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("打卡记录").font(.title2.bold())
-                    Text("在面板一键打卡；这里可以补记、修改或删除任意一天的记录。")
-                        .font(.callout).foregroundStyle(.secondary)
+
                 }
                 Spacer()
                 Button("补记打卡…") {
@@ -48,7 +47,7 @@ struct ClockRecordsPage: View {
                     ForEach(model.records.clockIns.keys.sorted(by: >), id: \.self) { key in
                         recordRow(key)
                     }
-                    Text("工时为上班到下班的时长，未扣除午休。")
+                    Text("工时已扣除与午休重叠的时段。")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
@@ -86,7 +85,7 @@ struct ClockRecordsPage: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Text(durationText(day)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+            Text(durationText(day, dateKey: key)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
             Button { editing = editorState(for: key) } label: {
                 Image(systemName: "pencil")
             }
@@ -114,10 +113,11 @@ struct ClockRecordsPage: View {
         Calendar.current.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: model.now) ?? model.now
     }
 
-    private func durationText(_ day: ClockDay) -> String {
-        guard let start = day.start, let end = day.end else { return "—" }
-        let minutes = max(0, Int(end.timeIntervalSince(start)) / 60)
-        return "\(minutes / 60)小时\(minutes % 60)分"
+    private func durationText(_ day: ClockDay, dateKey: String) -> String {
+        guard let date = HolidayCalendar.parseDay(dateKey, calendar: .current),
+              let duration = WorkTimeCalculator.actualWorkDuration(
+                for: day, on: date, schedule: model.config.schedule) else { return "—" }
+        return FishFormat.duration(duration)
     }
 }
 

@@ -32,12 +32,24 @@ public struct DayOverride: Codable, Equatable, Identifiable {
     public var isOffDay: Bool
     public var name: String
 
-    public init(id: UUID = UUID(), date: String, isOffDay: Bool, name: String) {
+    /// Both nil means all day; otherwise 0 <= start < end <= 1440 (exclusive end).
+    public var startMinutes: Int?
+    public var endMinutes: Int?
+
+    public init(id: UUID = UUID(), date: String, isOffDay: Bool, name: String,
+                startMinutes: Int? = nil, endMinutes: Int? = nil) {
         self.id = id; self.date = date; self.isOffDay = isOffDay; self.name = name
+        self.startMinutes = startMinutes; self.endMinutes = endMinutes
     }
 
+    public var isAllDay: Bool { startMinutes == nil && endMinutes == nil }
+
     public func isValid(calendar: Calendar = .current) -> Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty
-            && HolidayCalendar.parseDay(date, calendar: calendar) != nil
+        guard !name.trimmingCharacters(in: .whitespaces).isEmpty,
+              HolidayCalendar.parseDay(date, calendar: calendar) != nil else { return false }
+        if isAllDay { return true }
+        guard let startMinutes, let endMinutes else { return false }
+        return (0..<1440).contains(startMinutes)
+            && (1...1440).contains(endMinutes) && startMinutes < endMinutes
     }
 }

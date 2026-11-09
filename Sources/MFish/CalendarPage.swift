@@ -12,9 +12,9 @@ struct CalendarPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("上班日历").font(.title2.bold())
-            Text("休=休息日，假=节假日，班=调休上班；日期下方为假期名称或农历日，圆点表示当天有打卡。")
-                .font(.callout).foregroundStyle(.secondary)
+
             monthNav
+            monthWorkSummary
             weekdayHeader
             LazyVGrid(columns: columns, spacing: 4) {
                 ForEach(Array(monthDays.enumerated()), id: \.offset) { _, date in
@@ -28,6 +28,9 @@ struct CalendarPage: View {
             legend
             Divider()
             dayDetail
+            if model.config.debtModeEnabled {
+                workHoursComparison
+            }
             if let error {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
@@ -45,6 +48,18 @@ struct CalendarPage: View {
                 selected = model.now
             }
         }
+    }
+
+    private var monthWorkSummary: some View {
+        HStack {
+            Label("本月应上班时长", systemImage: "clock")
+                .font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Text(FishFormat.duration(WorkTimeCalculator.expectedWorkDuration(
+                inMonth: month, workCalendar: model.workCalendar, schedule: model.config.schedule)))
+                .font(.callout.weight(.semibold).monospacedDigit())
+        }
+        .padding(.horizontal, 4)
     }
 
     private var weekdayHeader: some View {
@@ -97,7 +112,7 @@ struct CalendarPage: View {
             }
             HStack {
                 if let existing {
-                    Text("自定义标记：\(existing.name)（\(existing.isOffDay ? "休息" : "上班")）")
+                    Text("\(existing.name) · \(existing.isOffDay ? "休息" : "上班") · \(overrideTimeText(existing))")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("清除标记") { model.deleteDayOverride(id: existing.id) }
                 } else {
@@ -109,13 +124,113 @@ struct CalendarPage: View {
         }
     }
 
+    private var workHoursComparison: some View {
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: selected)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: day) ?? day
+        let offset = (calendar.component(.weekday, from: day) + 5) % 7
+        let weekStart = calendar.date(byAdding: .day, value: -offset, to: day) ?? day
+        let weekEnd = calendar.date(byAdding: .day, value: 7, to: weekStart) ?? weekStart
+        let lastDay = calendar.date(byAdding: .day, value: -1, to: weekEnd) ?? weekEnd
+        return FishPanel {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Label("工时与生活警戒线", systemImage: "heart.text.square")
+                        .font(.headline)
+                    Spacer()
+                    Text("阈值 \(model.config.warningThresholdPercent)%")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                hoursComparisonRow(title: "所选日", start: day, end: nextDay,
+                                   standardHours: model.config.standardDailyHours, isDaily: true)
+                Divider()
+                Text("所在周：\(FishFormat.shortDay(weekStart))–\(FishFormat.shortDay(lastDay))")
+                    .font(.caption).foregroundStyle(.secondary)
+                hoursComparisonRow(title: "所在周", start: weekStart, end: weekEnd,
+                                   standardHours: model.config.standardWeeklyHours, isDaily: false)
+
+            }
+        }
+    }
+
+    private func hoursComparisonRow(title: String, start: Date, end: Date,
+                                    standardHours: Double, isDaily: Bool) -> some View {
+        let thresholdPercent = model.config.warningThresholdPercent
+        let comparison = WorkTimeCalculator.workHoursComparison(
+            clockIns: model.records.clockIns, from: start, until: end, standardHours: standardHours,
+            thresholdPercent: thresholdPercent, workCalendar: model.workCalendar,
+            schedule: model.config.schedule)
+        let threshold = FishFormat.duration(TimeInterval(comparison.thresholdSeconds))
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("\(title) · 标准 \(hoursLabel(standardHours))小时 · 警戒线 \(threshold)")
+                .font(.callout.weight(.semibold))
+            Text("排班 \(FishFormat.duration(TimeInterval(comparison.scheduledSeconds))) · 已打卡 \(FishFormat.duration(TimeInterval(comparison.actualSeconds)))（\(comparison.completedDays)天完整记录）")
+                .font(.callout.monospacedDigit())
+            if comparison.needsWarning {
+                VStack(alignment: .leading, spacing: 5) {
+                    Label(comparison.scheduledExceedsWarning ? "排班工时越过警戒线" : "实际工时越过警戒线",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout.weight(.semibold)).foregroundStyle(.red)
+                    ForEach(Array(warningLines(for: comparison, isDaily: isDaily).enumerated()), id: \.offset) {
+                        Text($0.element)
+                            .font(.callout).foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+            }
+        }
+    }
+
+    /// Rotating, concrete reminders so repeated days do not read like a template.
+    private func warningLines(for comparison: WorkHoursComparison, isDaily: Bool) -> [String] {
+        let ratio = comparison.worstRatio
+        let count = isDaily ? comparison.completedDays : comparison.completedDays
+        let head = isDaily
+            ? "这真的值得吗？工时已经超过标准的 \(ratio) 倍。"
+            : "这一周的工作量是标准的 \(ratio) 倍，生活被挤到了边角。"
+        let dailyPool = [
+            "这班是上了，但身体什么时候才休息？",
+            "多出来的小时不会写进工资条，只会写进你的疲惫。",
+            "公司在算产出，没人替你算睡眠。",
+            "今天的时间全给了工位，留给自己的只剩通勤和回不完的消息。",
+            "工作可以补，精力不能补打卡。",
+            "撑住今天，未必能撑住下一个月。把节奏拿回来。",
+            "回家之后你还有几小时？这几小时还要减去吃饭和刷牙。",
+        ]
+        let weeklyPool = [
+            "一周七天，你把最好的清醒时段都交给了公司。",
+            "周报写得再漂亮，也换不回这一周的生活。",
+            "赶进度的人最容易把周末也交出去，可周一只会照常到来。",
+            "工作还在继续，你的恢复时间已经欠账。",
+            "这一周的加班时长，够你好好睡几个整觉。",
+            "别让“忙完这阵”变成每个月的固定句式。",
+            "上班的人是你，被消耗的也是你。",
+        ]
+        let pool = isDaily ? dailyPool : weeklyPool
+        let index = abs(comparison.scheduledSeconds / 60 + count) % pool.count
+        let tail = pool[index]
+        return [head, tail]
+    }
+
+    private func hoursLabel(_ hours: Double) -> String {
+        hours == hours.rounded() ? String(Int(hours)) : String(format: "%.1f", hours)
+    }
+
+    private func overrideTimeText(_ day: DayOverride) -> String {
+        guard let start = day.startMinutes, let end = day.endMinutes else { return "全天" }
+        return String(format: "%02d:%02d–%02d:%02d", start / 60, start % 60, end / 60, end % 60)
+    }
+
     private func dayCell(_ date: Date) -> some View {
         let cal = Calendar.current
         let kind = model.workCalendar.kind(on: date)
         let isToday = cal.isDate(date, inSameDayAs: model.now)
         let isSelected = cal.isDate(date, inSameDayAs: selected)
         let hasClock = model.records.clockIns[HolidayCalendar.dayKey(for: date)]?.start != nil
-        let subtitle = cellSubtitle(kind, on: date)
+        let timedOverride = model.calendar.timedOverride(on: date)
+        let subtitle = timedOverride.map { ($0.name, $0.isOffDay ? Color.green : Color.orange) }
+            ?? cellSubtitle(kind, on: date)
         return Button { selected = date } label: {
             VStack(spacing: 2) {
                 HStack(spacing: 3) {

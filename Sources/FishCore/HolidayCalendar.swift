@@ -41,6 +41,7 @@ public struct HolidayCalendar {
     private var offDays: [String: String] = [:]
     private var workDays: [String: String] = [:]
     private var periods: [HolidayPeriod] = []
+    private var timedOverrides: [String: DayOverride] = [:]
     public let dataYears: Set<Int>
 
     public init(years: [HolidayYear], overrides: [HolidayOverride] = [],
@@ -78,10 +79,24 @@ public struct HolidayCalendar {
                 day = next
             }
         }
+        // Resolve duplicates before merging so an earlier all-day override cannot
+        // leak into the base schedule used by a later timed rest override.
+        var resolved: [String: DayOverride] = [:]
         for dayOverride in dayOverrides where dayOverride.isValid(calendar: calendar) {
+            resolved[dayOverride.date] = dayOverride
+        }
+        for dayOverride in resolved.values {
             guard let date = Self.parseDay(dayOverride.date, calendar: calendar) else { continue }
             let key = Self.dayKey(for: date, calendar: calendar)
             yearsWithData.insert(calendar.component(.year, from: date))
+            if !dayOverride.isAllDay {
+                timedOverrides[key] = dayOverride
+                if !dayOverride.isOffDay {
+                    workDays[key] = dayOverride.name
+                    offDays.removeValue(forKey: key)
+                }
+                continue
+            }
             if dayOverride.isOffDay {
                 offDays[key] = dayOverride.name
                 workDays.removeValue(forKey: key)
@@ -124,6 +139,9 @@ public struct HolidayCalendar {
 
     /// Holiday name when the date is inside a named holiday, otherwise nil.
     public func holidayName(on date: Date) -> String? { offDays[dayKey(for: date)] }
+
+    /// The effective partial-day override; partial rest does not alter base holidays.
+    public func timedOverride(on date: Date) -> DayOverride? { timedOverrides[dayKey(for: date)] }
 
     public func isMakeupWorkday(on date: Date) -> Bool { workDays[dayKey(for: date)] != nil }
 

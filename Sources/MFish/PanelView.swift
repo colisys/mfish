@@ -76,6 +76,9 @@ struct PanelView: View {
 
     private var almanacSection: some View {
         VStack(alignment: .leading, spacing: 8) {
+            Text("\(model.almanac.monthBranch)月 · \(model.almanac.officer)日")
+                .font(.caption2).foregroundStyle(.secondary)
+                .help(model.almanac.basis)
             HStack(alignment: .top, spacing: 12) {
                 almanacColumn(title: "宜", items: model.almanac.good, color: .green)
                 almanacColumn(title: "忌", items: model.almanac.bad, color: .red)

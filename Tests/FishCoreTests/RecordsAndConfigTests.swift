@@ -44,6 +44,23 @@ final class RecordsAndConfigTests: XCTestCase {
         XCTAssertEqual(config.schedule, WorkSchedule())
         XCTAssertEqual(config.customReminders, [])
         XCTAssertFalse(config.notificationsEnabled)
+        XCTAssertFalse(config.debtModeEnabled)
+        XCTAssertFalse(config.debtReminderEnabled)
+        XCTAssertEqual(config.debtReminderIntervalMinutes, 5)
+        XCTAssertEqual(config.standardDailyHours, 8)
+        XCTAssertEqual(config.standardWeeklyHours, 40)
+        XCTAssertEqual(config.warningThresholdPercent, 150)
+    }
+
+    func testOldScheduleGetsLunchDefaults() throws {
+        let json = #"{"schedule":{"enabled":true,"startMinutes":540,"endMinutes":1080}}"#
+        let config = try JSONDecoder().decode(FishConfig.self, from: Data(json.utf8))
+        XCTAssertTrue(config.schedule.enabled)
+        XCTAssertFalse(config.schedule.lunchEnabled)
+        XCTAssertEqual(config.schedule.lunchStartMinutes, 720)
+        XCTAssertEqual(config.schedule.lunchEndMinutes, 780)
+        XCTAssertTrue(config.schedule.remindLunchStart)
+        XCTAssertTrue(config.schedule.remindLunchEnd)
     }
 
     func testConfigFullRoundTrip() throws {
@@ -51,10 +68,20 @@ final class RecordsAndConfigTests: XCTestCase {
         config.overrides = [HolidayOverride(name: "春节", start: "2026-02-16", end: "2026-02-20")]
         config.dayOverrides = [DayOverride(date: "2026-11-14", isOffDay: false, name: "公司调休")]
         config.schedule = WorkSchedule(enabled: true, weekMode: .alternating, anchorIsSingle: true)
+        config.schedule.lunchEnabled = true
+        config.schedule.lunchStartMinutes = 730
+        config.schedule.lunchEndMinutes = 800
+        config.schedule.remindLunchEnd = false
         config.customReminders = [CustomReminder(title: "喝水", minutes: 750, rule: .daily),
                                   CustomReminder(title: "周报", minutes: 600, rule: .weekly([2, 6])),
                                   CustomReminder(title: "开会", minutes: 900, rule: .once("2026-11-10"))]
         config.notificationsEnabled = true
+        config.debtModeEnabled = true
+        config.debtReminderEnabled = true
+        config.debtReminderIntervalMinutes = 10
+        config.standardDailyHours = 7.5
+        config.standardWeeklyHours = 37.5
+        config.warningThresholdPercent = 180
         let data = try JSONEncoder().encode(config)
         XCTAssertEqual(try JSONDecoder().decode(FishConfig.self, from: data), config)
     }

@@ -1,12 +1,13 @@
 import SwiftUI
 
 enum ControlPage: String, CaseIterable, Identifiable {
-    case calendar, clock, holidays, reminders, settings
+    case calendar, clock, statistics, holidays, reminders, settings
     var id: String { rawValue }
     var title: String {
         switch self {
         case .calendar: return "上班日历"
         case .clock: return "打卡"
+        case .statistics: return "加班统计"
         case .holidays: return "节假日"
         case .reminders: return "提醒"
         case .settings: return "设置"
@@ -16,6 +17,7 @@ enum ControlPage: String, CaseIterable, Identifiable {
         switch self {
         case .calendar: return "calendar"
         case .clock: return "clock"
+        case .statistics: return "chart.bar"
         case .holidays: return "calendar.badge.clock"
         case .reminders: return "bell"
         case .settings: return "gearshape"
@@ -36,6 +38,7 @@ struct ControlView: View {
                     switch model.controlPage {
                     case .calendar: CalendarPage(model: model)
                     case .clock: ClockRecordsPage(model: model)
+                    case .statistics: StatisticsPage(model: model)
                     case .holidays: HolidaysPage(model: model)
                     case .reminders: RemindersPage(model: model)
                     case .settings: SettingsPage(model: model)

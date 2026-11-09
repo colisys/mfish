@@ -10,14 +10,18 @@ private struct HolidayEditorState: Identifiable {
     var end: Date
 }
 
+private struct DayEditorState: Identifiable {
+    let id = UUID()
+    var existing: DayOverride?
+    var date: Date
+}
+
 struct HolidaysPage: View {
     @ObservedObject var model: AppModel
     @State private var year = Calendar.current.component(.year, from: Date())
     @State private var editing: HolidayEditorState?
     @State private var error: String?
-    @State private var dayDate = Date()
-    @State private var dayIsOff = false
-    @State private var dayName = "公司调休"
+    @State private var dayEditing: DayEditorState?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -29,7 +33,7 @@ struct HolidaysPage: View {
                 }
                 .frame(width: 130)
             }
-            Text("修改只影响本机计算，保存在配置中；数据源更新不会覆盖你的修改。")
+            Text("修改仅在本机生效，不受数据更新影响。")
                 .font(.callout).foregroundStyle(.secondary)
             periodsList
             Button("添加自定义假期…") {
@@ -40,6 +44,11 @@ struct HolidaysPage: View {
             dayOverridesSection
             if let error {
                 Text(error).font(.caption).foregroundStyle(.red)
+            }
+        }
+        .sheet(item: $dayEditing) { state in
+            DayEditorSheet(state: state) { day in
+                try model.saveDayOverride(day, replacingID: state.existing?.id)
             }
         }
         .sheet(item: $editing) { state in
@@ -60,7 +69,7 @@ struct HolidaysPage: View {
     }
 
     private var periodsList: some View {
-        let periods = model.calendar.periods(inYear: year)
+        let periods = model.holidayListCalendar.periods(inYear: year)
         let officialNames = Set(model.sourceCalendar.periods(inYear: year).map(\.name))
         return VStack(spacing: 6) {
             if periods.isEmpty {
@@ -73,9 +82,9 @@ struct HolidaysPage: View {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Text(period.name).font(.body.weight(.medium))
-                            Text(existing == nil ? "官方" : isOfficial ? "已修改" : "自定义")
+                            Text(isOfficial ? (existing == nil ? "官方" : "已修改") : "自定义")
                                 .font(.caption2)
-                                .foregroundStyle(existing == nil ? Color.secondary : isOfficial ? Color.orange : Color.accentColor)
+                                .foregroundStyle(isOfficial ? (existing == nil ? Color.secondary : Color.orange) : Color.accentColor)
                         }
                         Text("\(FishFormat.shortDay(period.start))–\(FishFormat.shortDay(period.end)) · 共\(period.dayCount)天")
                             .font(.caption).foregroundStyle(.secondary)
@@ -101,7 +110,7 @@ struct HolidaysPage: View {
     private var dayOverridesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("自定义调休 / 休息日").font(.headline)
-            Text("单日标记优先于一切规则，适合公司自己的调休安排；也可以在“上班日历”里点选日期标记。")
+            Text("单日标记优先于其他日历规则。")
                 .font(.caption).foregroundStyle(.secondary)
             ForEach(model.config.dayOverrides.sorted { $0.date < $1.date }) { dayOverride in
                 HStack {
@@ -110,30 +119,106 @@ struct HolidaysPage: View {
                         .font(.callout.weight(.medium))
                         .foregroundStyle(dayOverride.isOffDay ? .green : .orange)
                     Text(dayOverride.name).font(.callout).foregroundStyle(.secondary)
+                    Text(timeRangeText(dayOverride)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     Spacer()
+                    Button("编辑") {
+                                            dayEditing = DayEditorState(existing: dayOverride,
+                                                date: HolidayCalendar.parseDay(dayOverride.date, calendar: .current) ?? model.now)
+                                        }
                     Button("删除") { model.deleteDayOverride(id: dayOverride.id) }
                 }
             }
-            HStack {
-                DatePicker("", selection: $dayDate, displayedComponents: .date)
-                    .labelsHidden().frame(width: 110)
-                Picker("", selection: $dayIsOff) {
+            Button("添加上班／调休…") {
+                dayEditing = DayEditorState(date: model.now)
+            }
+        }
+    }
+
+
+    private func timeRangeText(_ day: DayOverride) -> String {
+        guard let start = day.startMinutes, let end = day.endMinutes else { return "全天" }
+        return String(format: "%02d:%02d–%02d:%02d", start / 60, start % 60, end / 60, end % 60)
+    }
+
+}
+
+private struct DayEditorSheet: View {
+    let state: DayEditorState
+    let onSave: (DayOverride) throws -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var date: Date
+    @State private var name: String
+    @State private var isOff: Bool
+    @State private var allDay: Bool
+    @State private var start: Date
+    @State private var end: Date
+    @State private var error: String?
+
+    init(state: DayEditorState, onSave: @escaping (DayOverride) throws -> Void) {
+        self.state = state
+        self.onSave = onSave
+        let day = Calendar.current.startOfDay(for: state.date)
+        _date = State(initialValue: state.date)
+        _name = State(initialValue: state.existing?.name ?? "公司调休")
+        _isOff = State(initialValue: state.existing?.isOffDay ?? true)
+        _allDay = State(initialValue: state.existing?.isAllDay ?? true)
+        _start = State(initialValue: Calendar.current.date(byAdding: .minute,
+            value: state.existing?.startMinutes ?? 540, to: day) ?? day)
+        _end = State(initialValue: Calendar.current.date(byAdding: .minute,
+            value: state.existing?.endMinutes ?? 720, to: day) ?? day)
+    }
+
+    private func minutes(_ date: Date) -> Int {
+        Calendar.current.component(.hour, from: date) * 60 + Calendar.current.component(.minute, from: date)
+    }
+
+    private var invalidTime: Bool { !allDay && minutes(end) <= minutes(start) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(state.existing == nil ? "添加上班／调休" : "编辑上班／调休").font(.headline)
+            Form {
+                DatePicker("日期", selection: $date, displayedComponents: .date)
+                Picker("类型", selection: $isOff) {
                     Text("上班").tag(false)
-                    Text("休息").tag(true)
+                    Text("休息／调休").tag(true)
                 }
-                .labelsHidden().frame(width: 80)
-                TextField("名称", text: $dayName).frame(width: 110)
-                Button("添加") {
+                TextField("名称", text: $name)
+                Toggle("全天", isOn: $allDay)
+                if !allDay {
+                    DatePicker("开始时间", selection: $start, displayedComponents: .hourAndMinute)
+                    DatePicker("结束时间", selection: $end, displayedComponents: .hourAndMinute)
+                }
+            }
+            if invalidTime {
+                Text("结束时间需晚于开始时间。")
+                    .font(.caption).foregroundStyle(.red)
+            }
+            if let error {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("保存") {
                     do {
-                        try model.saveDayOverride(DayOverride(date: HolidayCalendar.dayKey(for: dayDate),
-                                                              isOffDay: dayIsOff, name: dayName))
-                        error = nil
+                        try onSave(DayOverride(id: state.existing?.id ?? UUID(),
+                            date: HolidayCalendar.dayKey(for: date), isOffDay: isOff,
+                            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                            startMinutes: allDay ? nil : minutes(start),
+                            endMinutes: allDay ? nil : minutes(end)))
+                        dismiss()
                     } catch {
                         self.error = error.localizedDescription
                     }
                 }
+                .keyboardShortcut(.defaultAction)
+                .disabled(invalidTime || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
+        .padding(20)
+        .frame(width: 380)
     }
 }
 

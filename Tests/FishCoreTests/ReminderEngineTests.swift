@@ -66,6 +66,62 @@ final class ReminderEngineTests: XCTestCase {
                                          customs: [], fired: [], calendar: calendar).isEmpty)
     }
 
+    func testLunchReminderBoundariesAndDeduplication() {
+        let cal = workCalendar(schedule: WorkSchedule(enabled: true, lunchEnabled: true))
+        func due(_ hour: Int, _ minute: Int, fired: Set<String> = []) -> [DueReminder] {
+            ReminderEngine.due(now: date(2026, 11, 9, hour, minute), workCalendar: cal,
+                               customs: [], fired: fired, calendar: calendar)
+        }
+        XCTAssertTrue(due(11, 59).isEmpty)
+        XCTAssertEqual(due(12, 0).map(\.key), ["lunch-start-2026-11-09"])
+        XCTAssertEqual(due(12, 30).map(\.key), ["lunch-start-2026-11-09"])
+        XCTAssertTrue(due(12, 31).isEmpty)
+        XCTAssertEqual(due(13, 0).map(\.key), ["lunch-end-2026-11-09"])
+        XCTAssertEqual(due(13, 30).map(\.key), ["lunch-end-2026-11-09"])
+        XCTAssertTrue(due(13, 31).isEmpty)
+        XCTAssertTrue(due(12, 5, fired: ["lunch-start-2026-11-09"]).isEmpty)
+        XCTAssertTrue(due(13, 5, fired: ["lunch-end-2026-11-09"]).isEmpty)
+    }
+
+    func testLunchSkipsRestDaysButFiresOnMakeupDays() {
+        let cal = workCalendar(schedule: WorkSchedule(enabled: true, lunchEnabled: true))
+        for hour in [12, 13] {
+            for day in [date(2026, 11, 14, hour), date(2026, 2, 17, hour)] {
+                XCTAssertTrue(ReminderEngine.due(now: day, workCalendar: cal,
+                                                 customs: [], fired: [], calendar: calendar).isEmpty)
+            }
+            XCTAssertEqual(ReminderEngine.due(now: date(2026, 2, 14, hour), workCalendar: cal,
+                                               customs: [], fired: [], calendar: calendar).count, 1)
+        }
+    }
+
+    func testLunchSwitchesAndCustomTimes() {
+        var s = WorkSchedule(enabled: true, lunchEnabled: true,
+                             lunchStartMinutes: 690, lunchEndMinutes: 810)
+        func due(_ hour: Int, _ minute: Int = 0) -> [DueReminder] {
+            ReminderEngine.due(now: date(2026, 11, 9, hour, minute), workCalendar: workCalendar(schedule: s),
+                               customs: [], fired: [], calendar: calendar)
+        }
+        XCTAssertEqual(due(11, 30).map(\.key), ["lunch-start-2026-11-09"])
+        XCTAssertEqual(due(13, 30).map(\.key), ["lunch-end-2026-11-09"])
+        s.remindLunchStart = false
+        XCTAssertTrue(due(11, 30).isEmpty)
+        XCTAssertFalse(due(13, 30).isEmpty)
+        s.remindLunchEnd = false
+        XCTAssertTrue(due(13, 30).isEmpty)
+        s.remindLunchStart = true
+        s.remindLunchEnd = true
+        s.lunchEnabled = false
+        XCTAssertTrue(due(11, 30).isEmpty)
+        XCTAssertTrue(due(13, 30).isEmpty)
+        s.lunchEnabled = true
+        s.enabled = false
+        XCTAssertTrue(due(11, 30).isEmpty)
+        XCTAssertTrue(due(13, 30).isEmpty)
+        XCTAssertTrue(ReminderEngine.due(now: date(2026, 11, 9, 12), workCalendar: workCalendar(),
+                                         customs: [], fired: [], calendar: calendar).isEmpty)
+    }
+
     func testCustomRules() {
         let cal = workCalendar()
         let daily = CustomReminder(title: "喝水", minutes: 750, rule: .daily)

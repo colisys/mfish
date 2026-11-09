@@ -142,6 +142,28 @@ final class WorkCalendarTests: XCTestCase {
         XCTAssertEqual(next?.date, date(2026, 11, 15, 0))
     }
 
+    func testScheduledEndUsesConfiguredTimeForAnyDay() {
+        let work = WorkCalendar(holidays: HolidayCalendar(years: [], calendar: calendar),
+                                schedule: WorkSchedule(endMinutes: 17 * 60 + 30), calendar: calendar)
+        XCTAssertEqual(work.scheduledEnd(on: date(2026, 11, 14, 9)), date(2026, 11, 14, 17) + 30 * 60)
+    }
+
+    func testNextWorkdayEndIncludesTodayUntilEndTime() {
+        let work = WorkCalendar(holidays: HolidayCalendar(years: [], calendar: calendar),
+                                schedule: WorkSchedule(endMinutes: 1080), calendar: calendar)
+        XCTAssertEqual(work.nextWorkdayEnd(after: date(2026, 11, 9, 9)), date(2026, 11, 9, 18))
+        XCTAssertEqual(work.nextWorkdayEnd(after: date(2026, 11, 9, 18)), date(2026, 11, 10, 18))
+    }
+
+    func testNextWorkdayEndSkipsRestAndHolidayDaysButIncludesMakeupDays() {
+        let holidays = HolidayCalendar(years: [fixture2026], calendar: calendar)
+        let work = WorkCalendar(holidays: holidays,
+                                schedule: WorkSchedule(enabled: true, endMinutes: 1080), calendar: calendar)
+        XCTAssertEqual(work.nextWorkdayEnd(after: date(2026, 11, 14, 9)), date(2026, 11, 16, 18))
+        XCTAssertEqual(work.nextWorkdayEnd(after: date(2026, 2, 17, 9)), date(2026, 2, 24, 18))
+        XCTAssertEqual(work.nextWorkdayEnd(after: date(2026, 2, 14, 9)), date(2026, 2, 14, 18))
+    }
+
     func testDisabledScheduleFallsBackToWeekend() {
         var s = schedule(.single)
         s.enabled = false

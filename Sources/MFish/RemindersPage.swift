@@ -32,10 +32,10 @@ struct RemindersPage: View {
     @State private var error: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("提醒").font(.title2.bold())
-                Text("提醒由常驻的 MFish 触发，退出 App 后不会提醒；节假日与调休按合并日历智能跳过。")
+                Text("退出 MFish 后不再提醒。")
                     .font(.callout).foregroundStyle(.secondary)
             }
             notificationPanel
@@ -63,88 +63,101 @@ struct RemindersPage: View {
 
     private var notificationPanel: some View {
         FishPanel {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("通知权限").font(.headline)
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("启用系统通知")
-                        Text(model.notificationStatus).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Toggle("", isOn: Binding(get: { model.config.notificationsEnabled },
-                                             set: { enabled in Task { await model.setNotifications(enabled) } }))
-                        .labelsHidden()
-                        .toggleStyle(.switch)
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("通知权限").font(.headline)
+                    Text(model.notificationStatus).font(.caption).foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 12)
+                Toggle("启用系统通知", isOn: Binding(get: { model.config.notificationsEnabled },
+                                                     set: { enabled in Task { await model.setNotifications(enabled) } }))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
             }
         }
     }
 
     private var schedulePanel: some View {
         FishPanel {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text("工作作息").font(.headline)
                     Spacer()
                     Toggle("启用", isOn: $scheduleDraft.enabled)
                         .toggleStyle(.switch)
+                        .controlSize(.small)
                 }
-                VStack(spacing: 10) {
-                    row("上班时间") {
-                        DatePicker("", selection: timeBinding(\.startMinutes), displayedComponents: .hourAndMinute)
-                            .labelsHidden()
-                            .frame(width: 96)
+                Divider()
+                HStack(spacing: 20) {
+                    timeField("上班", keyPath: \.startMinutes)
+                    timeField("下班", keyPath: \.endMinutes)
+                }
+                HStack(spacing: 12) {
+                    Toggle("午休", isOn: $scheduleDraft.lunchEnabled)
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                    if scheduleDraft.lunchEnabled {
+                        timeField("开始", keyPath: \.lunchStartMinutes)
+                        timeField("结束", keyPath: \.lunchEndMinutes)
                     }
-                    row("下班时间") {
-                        DatePicker("", selection: timeBinding(\.endMinutes), displayedComponents: .hourAndMinute)
-                            .labelsHidden()
-                            .frame(width: 96)
+                }
+                if scheduleDraft.lunchEnabled {
+                    HStack(spacing: 12) {
+                        Text("午休提醒").foregroundStyle(.secondary)
+                        Toggle("开始", isOn: $scheduleDraft.remindLunchStart)
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                        Toggle("结束", isOn: $scheduleDraft.remindLunchEnd)
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
                     }
-                    row("周末模式") {
-                        Picker("", selection: $scheduleDraft.weekMode) {
-                            Text("双休").tag(WeekMode.double)
-                            Text("单休").tag(WeekMode.single)
-                            Text("单双交替").tag(WeekMode.alternating)
+                }
+                row("周末模式") {
+                    Picker("", selection: $scheduleDraft.weekMode) {
+                        Text("双休").tag(WeekMode.double)
+                        Text("单休").tag(WeekMode.single)
+                        Text("单双交替").tag(WeekMode.alternating)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 240)
+                }
+                if scheduleDraft.weekMode != .single {
+                    row(scheduleDraft.weekMode == .alternating ? "双周休息日" : "每周休息日") {
+                        WeekdayPicker(days: restDaysBinding(\.restWeekdays))
+                    }
+                }
+                if scheduleDraft.weekMode != .double {
+                    row(scheduleDraft.weekMode == .alternating ? "单周休息日" : "每周休息日") {
+                        WeekdayPicker(days: restDaysBinding(\.singleRestWeekdays))
+                    }
+                }
+                if scheduleDraft.weekMode == .alternating {
+                    row("锚定周") {
+                        DatePicker("", selection: anchorBinding, displayedComponents: .date)
+                            .labelsHidden()
+                            .frame(width: 120)
+                        Picker("", selection: $scheduleDraft.anchorIsSingle) {
+                            Text("双休周").tag(false)
+                            Text("单休周").tag(true)
                         }
                         .labelsHidden()
-                        .pickerStyle(.segmented)
-                        .frame(width: 240)
-                    }
-                    if scheduleDraft.weekMode != .single {
-                        row(scheduleDraft.weekMode == .alternating ? "双周休息日" : "每周休息日") {
-                            WeekdayPicker(days: restDaysBinding(\.restWeekdays))
-                        }
-                    }
-                    if scheduleDraft.weekMode != .double {
-                        row(scheduleDraft.weekMode == .alternating ? "单周休息日" : "每周休息日") {
-                            WeekdayPicker(days: restDaysBinding(\.singleRestWeekdays))
-                        }
-                    }
-                    if scheduleDraft.weekMode == .alternating {
-                        row("锚定周") {
-                            DatePicker("", selection: anchorBinding, displayedComponents: .date)
-                                .labelsHidden()
-                                .frame(width: 120)
-                            Picker("", selection: $scheduleDraft.anchorIsSingle) {
-                                Text("双休周").tag(false)
-                                Text("单休周").tag(true)
-                            }
-                            .labelsHidden()
-                            .frame(width: 100)
-                        }
+                        .frame(width: 100)
                     }
                 }
                 Text(scheduleDraft.weekMode == .alternating
-                     ? "点击圆圈选择休息日；锚定周任选该周中的一天，单双按此交替。节假日与调休优先于个人安排。"
-                     : "点击圆圈选择休息日；法定节假日与调休上班优先于此安排。")
+                     ? "锚定周选定后，单双周按此交替；节假日与调休优先。"
+                     : "法定节假日与调休上班优先于个人休息日设置。")
                     .font(.caption).foregroundStyle(.secondary)
                 Divider()
-                HStack {
+                HStack(spacing: 12) {
                     Toggle("上班提醒", isOn: $scheduleDraft.remindStart)
                         .toggleStyle(.switch)
+                        .controlSize(.small)
                     Toggle("下班提醒", isOn: $scheduleDraft.remindEnd)
                         .toggleStyle(.switch)
-                    Spacer()
+                        .controlSize(.small)
+                    Spacer(minLength: 8)
                     Button("保存作息") {
                         do {
                             try model.saveSchedule(scheduleDraft)
@@ -154,6 +167,7 @@ struct RemindersPage: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
                 }
             }
         }
@@ -207,11 +221,23 @@ struct RemindersPage: View {
     }
 
     private func row<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack {
+        HStack(spacing: 12) {
             Text(title)
-            Spacer()
+                .frame(width: 104, alignment: .leading)
             content()
+            Spacer(minLength: 0)
         }
+    }
+
+    private func timeField(_ title: String, keyPath: WritableKeyPath<WorkSchedule, Int>) -> some View {
+        HStack(spacing: 8) {
+            Text(title).foregroundStyle(.secondary)
+            DatePicker("", selection: timeBinding(keyPath), displayedComponents: .hourAndMinute)
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(width: 88)
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func editorState(for reminder: CustomReminder) -> ReminderEditorState {

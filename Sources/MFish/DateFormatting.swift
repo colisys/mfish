@@ -33,4 +33,12 @@ enum FishFormat {
     static func shortDay(_ date: Date) -> String { shortDayFormatter.string(from: date) }
     static func dateTime(_ date: Date) -> String { dateTimeFormatter.string(from: date) }
     static func time(_ date: Date) -> String { timeFormatter.string(from: date) }
+
+    static func duration(_ seconds: TimeInterval) -> String {
+        let minutes = max(0, Int(seconds) / 60)
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        if hours > 0 { return remainder == 0 ? "\(hours)小时" : "\(hours)小时\(remainder)分" }
+        return "\(remainder)分钟"
+    }
 }

@@ -11,6 +11,20 @@ public enum CountdownFormat {
         if hours > 0 { return minutes > 0 ? "\(hours)小时\(minutes)分" : "\(hours)小时" }
         return max(1, minutes) > 1 ? "\(minutes)分钟" : "不到1分钟"
     }
+
+    /// Second-precision menu-bar timer. Negative intervals count upward with a `+` prefix.
+    public static func precise(_ interval: TimeInterval) -> String {
+        let overtime = interval < 0
+        let seconds = overtime ? Int(-interval) : Int(ceil(interval))
+        let total = max(0, seconds)
+        let days = total / 86400
+        let hours = (total % 86400) / 3600
+        let minutes = (total % 3600) / 60
+        let remainder = total % 60
+        let clock = String(format: "%02d:%02d:%02d", hours, minutes, remainder)
+        let value = days > 0 ? "\(days)天\(clock)" : clock
+        return overtime ? "+\(value)" : value
+    }
 }
 
 public struct YearProgress {
