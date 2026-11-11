@@ -93,8 +93,10 @@ public enum WorkTimeCalculator {
     }
 
     /// Sums completed clock-outs later than the configured end time in `[start, end)`.
+    /// `graceMinutes` is the first reminder cycle after the scheduled end time;
+    /// checkouts inside it do not count as leaving late.
     public static func overtimeSummary(clockIns: [String: ClockDay], from start: Date, until end: Date,
-                                       schedule: WorkSchedule,
+                                       schedule: WorkSchedule, graceMinutes: Int = 0,
                                        calendar: Calendar = .current) -> OvertimeSummary {
         guard (0..<1440).contains(schedule.endMinutes), start < end else { return OvertimeSummary() }
         var totalSeconds = 0
@@ -107,6 +109,10 @@ public enum WorkTimeCalculator {
                                                    minute: schedule.endMinutes % 60,
                                                    second: 0, of: day),
                   checkout > scheduledEnd else { continue }
+            if graceMinutes > 0,
+               checkout <= scheduledEnd.addingTimeInterval(TimeInterval(graceMinutes) * 60) {
+                continue
+            }
             totalSeconds += Int(checkout.timeIntervalSince(scheduledEnd))
             lateDays += 1
         }

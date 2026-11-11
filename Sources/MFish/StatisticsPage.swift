@@ -1,6 +1,12 @@
-import Charts
 import FishCore
 import SwiftUI
+
+private struct DailyOvertime: Identifiable {
+    let date: Date
+    let seconds: Int
+    var id: Date { date }
+    var minutes: Double { Double(seconds) / 60 }
+}
 
 struct StatisticsPage: View {
     @ObservedObject var model: AppModel
@@ -9,7 +15,7 @@ struct StatisticsPage: View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("加班统计").font(.title2.bold())
-                Text("统计晚于设定下班时间的已完成打卡。")
+                Text("统计超过下班时间一个提醒间隔的已完成打卡，间隔内打卡不算晚下班。")
                     .font(.callout).foregroundStyle(.secondary)
             }
             summaryPanel(title: "本周", range: weekRange, summary: weekSummary)
@@ -39,13 +45,15 @@ struct StatisticsPage: View {
     private var weekSummary: OvertimeSummary {
         WorkTimeCalculator.overtimeSummary(clockIns: model.records.clockIns,
                                            from: weekRange.start, until: weekRange.end,
-                                           schedule: model.config.schedule)
+                                           schedule: model.config.schedule,
+                                           graceMinutes: model.config.debtReminderIntervalMinutes)
     }
 
     private var monthSummary: OvertimeSummary {
         WorkTimeCalculator.overtimeSummary(clockIns: model.records.clockIns,
                                            from: monthRange.start, until: monthRange.end,
-                                           schedule: model.config.schedule)
+                                           schedule: model.config.schedule,
+                                           graceMinutes: model.config.debtReminderIntervalMinutes)
     }
 
     private func summaryPanel(title: String, range: (start: Date, end: Date),
@@ -75,13 +83,6 @@ struct StatisticsPage: View {
         }
     }
 
-    private struct DailyOvertime: Identifiable {
-        let date: Date
-        let seconds: Int
-        var id: Date { date }
-        var minutes: Double { Double(seconds) / 60 }
-    }
-
     private func dailyOvertime(in range: (start: Date, end: Date)) -> [DailyOvertime] {
         let calendar = Calendar.current
         var days: [DailyOvertime] = []
@@ -90,7 +91,8 @@ struct StatisticsPage: View {
             guard let next = calendar.date(byAdding: .day, value: 1, to: day), next > day else { break }
             let summary = WorkTimeCalculator.overtimeSummary(
                 clockIns: model.records.clockIns, from: day, until: next,
-                schedule: model.config.schedule, calendar: calendar)
+                schedule: model.config.schedule,
+                graceMinutes: model.config.debtReminderIntervalMinutes, calendar: calendar)
             days.append(DailyOvertime(date: day, seconds: summary.totalSeconds))
             day = next
         }
@@ -100,37 +102,20 @@ struct StatisticsPage: View {
     private func overtimeChart(range: (start: Date, end: Date)) -> some View {
         let days = dailyOvertime(in: range)
         let maximumMinutes = max(30, (days.map(\.minutes).max() ?? 0) * 1.15)
-        return Chart(days) { day in
-            BarMark(
-                x: .value("日期", day.date, unit: .day),
-                y: .value("晚下班（分钟）", day.minutes)
-            )
-            .foregroundStyle(model.config.debtModeEnabled ? Color.orange : Color.accentColor)
-            .cornerRadius(3)
-            .accessibilityLabel(FishFormat.shortDay(day.date))
-            .accessibilityValue(day.seconds > 0
-                ? "晚下班 \(FishFormat.duration(TimeInterval(day.seconds)))" : "无超时")
-        }
-        .chartXScale(domain: range.start...range.end)
-        .chartYScale(domain: 0...maximumMinutes)
-        .chartXAxis {
-            AxisMarks(values: .stride(by: .day, count: days.count > 7 ? 5 : 1)) { _ in
-                AxisTick()
-                AxisValueLabel(format: .dateTime.day())
-            }
-        }
-        .chartYAxis {
-            AxisMarks(position: .leading) { value in
-                AxisGridLine()
-                AxisValueLabel {
-                    if let minutes = value.as(Double.self) {
-                        Text("\(minutes, specifier: "%.0f")分")
-                    }
-                }
-            }
-        }
-        .chartXAxisLabel("日期", alignment: .trailing)
-        .frame(height: 170)
+        let summary = WorkTimeCalculator.overtimeSummary(
+            clockIns: model.records.clockIns, from: range.start, until: range.end,
+            schedule: model.config.schedule,
+            graceMinutes: model.config.debtReminderIntervalMinutes)
+        let value = summary.totalSeconds > 0
+            ? "共 \(summary.lateDays) 天晚下班，累计 \(FishFormat.duration(TimeInterval(summary.totalSeconds)))"
+            : "无超时"
+        return OvertimeBarChart(days: days, maximumMinutes: maximumMinutes,
+                                labelStride: days.count > 7 ? 5 : 1,
+                                barColor: model.config.debtModeEnabled ? .orange : .accentColor)
+            .frame(height: 170)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("晚下班统计图")
+            .accessibilityValue(value)
     }
 
     private func rangeText(_ range: (start: Date, end: Date)) -> String {
@@ -168,5 +153,73 @@ struct StatisticsPage: View {
         let index = (summary.lateDays + summary.totalSeconds / 60) % activities.count
         let reminder = reminders[(index + summary.lateDays) % reminders.count]
         return "\(period)有 \(summary.lateDays) 天晚下班，浪费了 \(duration)。\(activities[index])\(reminder)"
+    }
+}
+
+/// 晚下班柱状图。Swift Charts 在 macOS 13 上会把轴标签裁剪到最窄标签的宽度
+///（多字标签只剩最后一个字），因此这里用 Canvas 自绘柱、网格与刻度。
+private struct OvertimeBarChart: View {
+    let days: [DailyOvertime]
+    let maximumMinutes: Double
+    let labelStride: Int
+    let barColor: Color
+
+    private let leadingInset: CGFloat = 38
+    private let trailingInset: CGFloat = 2
+    private let topInset: CGFloat = 6
+    private let bottomInset: CGFloat = 22
+    private let calendar = Calendar.current
+
+    private var tickStep: Int {
+        let candidates = [5, 10, 15, 20, 30, 60, 120, 240, 480, 960]
+        return candidates.first { maximumMinutes / Double($0) <= 4.2 } ?? 960
+    }
+
+    var body: some View {
+        Canvas { context, size in
+            guard !days.isEmpty, maximumMinutes > 0 else { return }
+            let plot = CGRect(x: leadingInset, y: topInset,
+                              width: max(0, size.width - leadingInset - trailingInset),
+                              height: max(0, size.height - topInset - bottomInset))
+            let baseline = Path { path in
+                path.move(to: CGPoint(x: plot.minX, y: plot.maxY))
+                path.addLine(to: CGPoint(x: plot.maxX, y: plot.maxY))
+            }
+            context.stroke(baseline, with: .color(.primary.opacity(0.2)), lineWidth: 1)
+
+            let step = tickStep
+            var tick = 0
+            while Double(tick) <= maximumMinutes {
+                let y = plot.maxY - plot.height * Double(tick) / maximumMinutes
+                if tick > 0 {
+                    let grid = Path { path in
+                        path.move(to: CGPoint(x: plot.minX, y: y))
+                        path.addLine(to: CGPoint(x: plot.maxX, y: y))
+                    }
+                    context.stroke(grid, with: .color(.primary.opacity(0.08)), lineWidth: 1)
+                }
+                context.draw(Text("\(tick)分").font(.caption2).foregroundColor(.secondary),
+                             at: CGPoint(x: plot.minX - 5, y: y), anchor: .trailing)
+                tick += step
+            }
+
+            let columnWidth = plot.width / Double(days.count)
+            let barWidth = columnWidth * 0.65
+            for (index, day) in days.enumerated() {
+                guard day.minutes > 0 else { continue }
+                let barHeight = plot.height * day.minutes / maximumMinutes
+                let barRect = CGRect(x: plot.minX + columnWidth * Double(index) + (columnWidth - barWidth) / 2,
+                                     y: plot.maxY - barHeight, width: barWidth, height: barHeight)
+                context.fill(Path(roundedRect: barRect, cornerRadius: 3), with: .color(barColor))
+            }
+
+            for index in stride(from: 0, to: days.count, by: labelStride) {
+                let day = days[index].date
+                let x = plot.minX + columnWidth * (Double(index) + 0.5)
+                context.draw(Text("\(calendar.component(.day, from: day))日")
+                    .font(.caption2).foregroundColor(.secondary),
+                             at: CGPoint(x: x, y: plot.maxY + 4), anchor: .top)
+            }
+        }
     }
 }

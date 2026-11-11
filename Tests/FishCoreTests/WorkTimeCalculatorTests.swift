@@ -147,4 +147,23 @@ final class WorkTimeCalculatorTests: XCTestCase {
         XCTAssertEqual(summary.lateDays, 2)
         XCTAssertEqual(summary.totalSeconds, 6_300)
     }
+
+    func testOvertimeSummaryIgnoresCheckoutsInsideFirstReminderCycle() {
+        let schedule = WorkSchedule(startMinutes: 540, endMinutes: 1080)
+        let records: [String: ClockDay] = [
+            // 18:20：落在下班后 30 分钟的提醒周期内，不算晚下班。
+            "2026-11-09": ClockDay(start: date(2026, 11, 9, 8, 30), end: date(2026, 11, 9, 18, 20)),
+            // 18:31：刚超出第一个提醒周期，晚下班 31 分钟。
+            "2026-11-10": ClockDay(start: date(2026, 11, 10, 9), end: date(2026, 11, 10, 18, 31)),
+            // 提前下班不算。
+            "2026-11-11": ClockDay(start: date(2026, 11, 11, 9), end: date(2026, 11, 11, 17, 59)),
+        ]
+        let summary = WorkTimeCalculator.overtimeSummary(clockIns: records,
+                                                         from: date(2026, 11, 9, 0),
+                                                         until: date(2026, 11, 12, 0),
+                                                         schedule: schedule, graceMinutes: 30,
+                                                         calendar: calendar)
+        XCTAssertEqual(summary.lateDays, 1)
+        XCTAssertEqual(summary.totalSeconds, 31 * 60)
+    }
 }
